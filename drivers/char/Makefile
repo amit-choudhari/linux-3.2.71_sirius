@@ -20,6 +20,7 @@ obj-$(CONFIG_BRIQ_PANEL)	+= briq_panel.o
 obj-$(CONFIG_BFIN_OTP)		+= bfin-otp.o
 obj-m				+= myscull/
 obj-m				+= myioram.o
+obj-m				+= mychar.o
 
 obj-$(CONFIG_PRINTER)		+= lp.o
 
