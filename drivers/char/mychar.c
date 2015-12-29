@@ -32,11 +32,30 @@ ssize_t my_write(struct file *fp, char __user *buff,size_t count, loff_t *off )
 	*off+=count;
 	return count;
 }
+
+long my_ioctl (struct file *fp, unsigned int cmd, unsigned long arg)
+{
+
+	switch(cmd)
+	{
+	case 1:
+		printk(KERN_DEBUG "\nInside ioctl cmd 1");
+		break;
+	case 2:
+		printk(KERN_DEBUG "\nInside ioctl cmd 2");
+		break;
+	default:
+		printk(KERN_DEBUG "\nSomething else");
+	}
+	return 1;
+}
+
 struct file_operations fops = {
 	.open = my_open,
 	.release = my_release,
 	.read = my_read,
 	.write = my_write,
+	.unlocked_ioctl = my_ioctl,
 
 };
 static int __init hello_init (void)
