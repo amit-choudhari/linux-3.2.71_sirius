@@ -1,17 +1,21 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/slab.h>
+#include "test_mychar.h" 
 
 #define DEVICE_NAME "temp_char"
-#define GET_VARIABLE 1
-#define SET_VARIABLE 2
 #define CLASS_NAME "class_Sirius"
+#define DEVICE_FILE_NAME "sirius_dev"
+
 dev_t dev;
 struct cdev *my_cdev;
 struct class *cl;
 
+MODULE_LICENSE("GPL");
 int my_open(struct inode *inode, struct file *fp)
 {
 	printk("opened my device\n");
@@ -42,11 +46,14 @@ long my_ioctl (struct file *fp, unsigned int cmd, unsigned long arg)
 
 	switch(cmd)
 	{
-	case GET_VARIABLE:
+	case MYCHAR_IOCTL_R:
 		printk(KERN_DEBUG "\nInside ioctl cmd GET_VARIABLE");
 		break;
-	case SET_VARIABLE:
+	case MYCHAR_IOCTL_W:
 		printk(KERN_DEBUG "\nInside ioctl cmd SET_VARIABLE");
+		student *s1 = arg;
+		s1->id = 5;
+		s1->age = 23;
 		break;
 	default:
 		printk(KERN_DEBUG "\nSomething else");
@@ -63,28 +70,27 @@ struct file_operations fops = {
 
 };
 
-static int __init hello_init (void)
+static int hello_init (void)
 {
 	int rc, major, minor;
+	my_cdev = (struct cdev *) kmalloc(sizeof(struct cdev), GFP_KERNEL);
 	printk("inside hello");
 	rc = alloc_chrdev_region(&dev,0,1,DEVICE_NAME);
-	if(!rc)
+	if(rc<0)
 	goto alloc_Fail;
 
 	major=MAJOR(dev);
 	minor=MINOR(dev);
 
 	printk("device major = %d minor = %d",major,minor);
+	cdev_init(my_cdev,&fops);
 	rc = cdev_add(my_cdev, dev, 1);
-	if(!rc)
+	if(rc<0)
 	goto cdev_add_fail;
 
-	rc = cdev_init(my_cdev,&fops);
-	if(!rc)
-	goto cdev_init_fail;
-
 	cl = class_create(THIS_MODULE,CLASS_NAME);
-	if(!rc)
+
+	if(IS_ERR(device_create(cl, NULL, dev, NULL, DEVICE_FILE_NAME)))
 	goto device_create_fail;
 
 	return 0;
@@ -101,17 +107,18 @@ device_create_fail:
 	printk("device creation failed");
 	class_destroy(cl);
 	cdev_del(my_cdev);
-	unregister_chrdev_region(&dev,1);
+	unregister_chrdev_region(dev,1);
 	return -EFAULT;
 }
 
 
-static void __exit hello_exit (void)
+static void hello_exit (void)
 {
 	printk("exit hello");
+	device_destroy(cl,dev);
 	class_destroy(cl);
 	cdev_del(my_cdev);
-	unregister_chardev_region(&dev,1);
+	unregister_chrdev_region(dev,1);
 }
 
 module_init(hello_init);
