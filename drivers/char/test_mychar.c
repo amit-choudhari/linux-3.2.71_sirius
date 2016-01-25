@@ -1,10 +1,14 @@
-#include <stdio.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/types.h>
-#include <stdio.h>
-#include "test_mychar.h" 
+#ifndef QUERY_IOCTL_H
+#define QUERYt_IOCTL_H
+#include <linux/ioctl.h>
+
+typedef struct {
+	int id,
+	int age,
+} student;
+
+#define MYCHAR_IOCTL_R _IOR('k', 1, student) 
+#define MYCHAR_IOCTL_W _IOW('k', 1, student) 
 
 void get_vars(int fd){
 	student s1;
@@ -16,20 +20,20 @@ void set_vars(int fd){
 	student s1;
 	scanf("%d %d",&(s1.id),&(s1.age));
 	ioctl(fd, MYCHAR_IOCTL_W, &s1);
-	printf("\nid=%d age=%d",s1.id,s1.age);
-	printf("\nvals set");
+	printf("vals set");
 }
 
 int main(int argc, char* argv[])
 {
-	char *name = "/dev/sirius_dev";
-
+	char* name = "/dev/sirius_dev";
 	int fd = open(name, O_RDWR);
-	printf("opened");
-	if(strcmp(argv[1], "1") == 0){
+	switch (argv[1]){
+	case 1:
 		get_vars(fd);
-	}else if(strcmp(argv[1], "2") == 0){
+		break;
+	case 2:
 		set_vars(fd);
+		break;
 	}
 	close(fd);
 	return 0;
