@@ -35,9 +35,38 @@ void print_config_space(struct pci_dev *dev)
 
 	printk(KERN_DEBUG "inside probe for realtek driver \nvendor = %d\ndevice = %d\nfunction = %d\n",dev->vendor,dev->device,dev->devfn);	
 	printk(KERN_DEBUG "\nsubsystem_vendor = %d\nsubsystem_device = %d\nfunction = %d\n",dev->subsystem_vendor,dev->subsystem_device,dev->devfn);	
-	printk("\n		Printing Config Space");
+	printk("\n-----------Printing Config Space-----------");
 	pci_read_config_word(dev, 0, &myword);
-	printk("\n VENDOR_ID%x",myword);
+	printk("\n VENDOR_ID = %x",myword);
+	pci_read_config_word(dev, 2, &myword);
+	printk("\n Device_ID = %x", myword);
+	pci_read_config_word(dev, 4, &myword);
+	printk("\n command register = %x", myword);
+	pci_read_config_word(dev, 6, &myword);
+	printk("\n status register = %x", myword);
+	pci_read_config_byte(dev, 8, &mybyte);
+	printk("\n Revesion ID = %x", mybyte);
+	pci_read_config_byte(dev, 0x0B, &mybyte);
+	printk("\n Base-class = %x", mybyte);
+	pci_read_config_byte(dev, 0x0A, &mybyte);
+	printk("   Sub-class = %x", mybyte);
+	pci_read_config_byte(dev, 9, &mybyte);
+	printk("   Prog I/F = %x", mybyte);
+	pci_read_config_dword(dev, 0x0C, &mydword);
+	printk("\n BIST Header-type Latency-timer Cache-line-size = %lx", mydword);
+	pci_read_config_dword(dev, 0x10, &mydword);
+	printk("\n Base Address 0 (IOAR) = %lx", mydword);
+	pci_read_config_dword(dev, 0x14, &mydword);
+	printk("\n Base Address 1 (MEMAR) = %lx", mydword);
+	printk("\n Base Address 2-5 (RESERVED)");
+	pci_read_config_dword(dev, 0x28, &mydword);
+	printk("\n CardBus CIS pointer = %lx", mydword);
+	pci_read_config_word(dev, 0x2c, &myword);
+	printk("\n Sub VENDOR_ID = %x",myword);
+	pci_read_config_word(dev, 0x2E, &myword);
+	printk("\n Sub Device_ID = %x", myword);
+	pci_read_config_dword(dev, 0x30, &mydword);
+	printk("\n Expansion ROM Base Address = %lx", mydword);
 
 }
 
@@ -55,34 +84,38 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 	return rc;
 	}
 	else
-	printk(KERN_INFO "\ndevice enabled");
+	printk(KERN_INFO "\ndevice enabled\n");
 
 	print_config_space(dev);
-
-	rc = pci_request_regions(dev, "mypci");
-	if(rc)
+	
+        if(pci_request_region(dev, 0, "mypci_mem") != 0)
 	{
-	printk("\nrequest region FAILED");
-	pci_disable_device(dev);
-	return rc;
+	printk(KERN_ERR "pci_request_region failed\n");
+	goto ALLOC_REGION_FAIL;
 	}
 	else
-	printk(KERN_INFO "\ndevice region acquired");
+	{
+	printk(KERN_INFO "pci_request_region pass\n");
+	}
 
-        if ((dpv->reg_base = ioremap(pci_resource_start(dev, 2), pci_resource_len(dev, 2))) == NULL)
-        {
-                printk(KERN_ERR "Unable to map registers of this PCI device\n");
-                pci_release_regions(dev);
-                pci_disable_device(dev);
-                return -ENODEV;
-        }
-        printk(KERN_INFO "Register Base: %p\n", dpv->reg_base);
-
-        printk(KERN_INFO "IRQ: %u\n", dev->irq);
-
-        pci_set_drvdata(dev, dpv);
+	if((dpv->reg_base = ioremap(pci_resource_start(dev,1), pci_resource_len(dev,1))) == NULL){
+        printk("ioremap fail");
+	goto IOREMAP_FAIL;	
+	}	
+	printk(KERN_INFO "Register Base: %p\n", dpv->reg_base);
+	printk(KERN_INFO "IRQ: %u\n", dev->irq);
 	
+	pci_set_drvdata(dev,dpv);
+	printk(KERN_INFO "PCI DEVICE REGISTERED. OUT OF PROBE");
+	goto DONE;	
+
+IOREMAP_FAIL:
+
+ALLOC_REGION_FAIL:
+	pci_disable_device(dev);
+DONE:
 	return 0;
+
 }
 
 static void myPciRemove(struct pci_dev *dev)
@@ -110,6 +143,7 @@ struct pci_driver mypci_driver = {
 
 static int __init mypci_init(void)
 {
+	/* Register the pci horizontal with PCI core(then register it to pci bus) */
 	pci_register_driver(&mypci_driver);
 	printk(KERN_DEBUG "PCI driver registered");
 	return 0;
