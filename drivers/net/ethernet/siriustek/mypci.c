@@ -4,17 +4,122 @@
 #include<linux/pci.h>
 #include<linux/types.h>
 #include<linux/io.h>
+#include<linux/cdev.h>
+#include<linux/fs.h>
+#include<linux/device.h>
+#include<linux/slab.h>
+#include<linux/uaccess.h>
+
 
 #define EXPT_VENDOR_ID PCI_VENDOR_ID_REALTEK
 #define EXPT_PRODUCT_ID 0x8136 /* Fast ethernet card on PCs */
+#define DEVICE_NAME "siriuspci"
+#define CLASS_NAME "sirius_class"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Amit");
+
 static struct dev_priv
 {
+	dev_t mydev;
+	struct cdev mycdev;
+	struct class *cl;
         void __iomem *reg_base;
 } _pvt;
 
+
+ssize_t pci_read(struct file *fp, char __user *buff, size_t count, loff_t *off)
+{
+	int i,data;
+	char mac[7];
+	struct dev_priv *private = (struct dev_priv*) fp->private_data;
+	printk(KERN_INFO "\nmac-addr ");
+	for(i=0; i<6; i++){
+		data = ioread8(private->reg_base +i);
+		printk(KERN_INFO "%x:",data);
+		mac[i]=data;
+	}
+	mac[i]='\0';
+	if(copy_to_user(buff, mac, 7)){
+		printk(KERN_INFO "copy to user failed");
+	}
+	return 0;
+}
+/*
+ssize_t pci_write(struct file *fp, const char __user *buff, size_t count, loff_t *off)
+{
+	
+	return 0;
+}
+*/
+int pci_open(struct inode *inode, struct file *fp)
+{
+	fp->private_data = &_pvt;
+	printk(KERN_INFO "\ninside open");
+	return 0;
+}
+
+int pci_close(struct inode *inode, struct file *fp)
+{
+	printk(KERN_INFO "\ninside close");
+	return 0;
+}
+
+struct file_operations pci_fops = {
+	.open = pci_open,
+	.release = pci_close,
+	.read = pci_read,
+//	.write = pci_write
+};
+
+int init_chardev(struct dev_priv *pdata)
+{
+	int major, minor;
+	int ret;
+	struct device *dev_ret;
+	
+	ret = alloc_chrdev_region(&(pdata->mydev), 0, 1, DEVICE_NAME);
+	if(ret){
+	printk(KERN_ERR "\nalloc_chrdev_region failed");
+	goto ALLOC_FAILED;
+	}
+	major = MAJOR(pdata->mydev);
+	minor = MINOR(pdata->mydev);
+	printk(KERN_INFO "\nmajor = %d minor = %d", major, minor);
+
+	cdev_init(&(pdata->mycdev), &pci_fops);
+
+	if(cdev_add(&(pdata->mycdev), pdata->mydev, 1)){
+	printk(KERN_ERR "\ncdev add Failed");
+	goto CDEV_ADD_FAIL;
+	}
+
+	if(IS_ERR(pdata->cl = class_create(THIS_MODULE, CLASS_NAME))){
+	printk(KERN_ERR "\nclass create failed");
+	goto CLASS_CREATE_FAIL;
+	}
+
+	if(IS_ERR(dev_ret = device_create(pdata->cl, NULL, pdata->mydev, NULL, "sirius_pci%d",0))){
+	printk(KERN_ERR "\ndevice create failed");
+	goto DEVICE_CREATE_FAIL;
+	}
+	
+	goto DONE;
+
+DEVICE_CREATE_FAIL:
+class_destroy(pdata->cl);
+CLASS_CREATE_FAIL:
+cdev_del(&(pdata->mycdev));
+
+CDEV_ADD_FAIL:
+unregister_chrdev_region(pdata->mydev, 1);
+
+ALLOC_FAILED:
+return -EFAULT;
+
+DONE:
+return 0;
+}
 
 struct pci_device_id mydeviceid[] = {
 	{
@@ -33,40 +138,42 @@ void print_config_space(struct pci_dev *dev)
 	uint16_t myword;
 	uint32_t mydword;
 
-	printk(KERN_DEBUG "inside probe for realtek driver \nvendor = %d\ndevice = %d\nfunction = %d\n",dev->vendor,dev->device,dev->devfn);	
+	printk(KERN_DEBUG "\ninside probe for realtek driver \nvendor = %d\ndevice = %d\nfunction = %d\n",dev->vendor,dev->device,dev->devfn);	
 	printk(KERN_DEBUG "\nsubsystem_vendor = %d\nsubsystem_device = %d\nfunction = %d\n",dev->subsystem_vendor,dev->subsystem_device,dev->devfn);	
-	printk("\n-----------Printing Config Space-----------");
+	printk(KERN_INFO "\n-----------Printing Config Space-----------");
 	pci_read_config_word(dev, 0, &myword);
-	printk("\n VENDOR_ID = %x",myword);
+	printk(KERN_INFO "\n VENDOR_ID = %x",myword);
 	pci_read_config_word(dev, 2, &myword);
-	printk("\n Device_ID = %x", myword);
+	printk(KERN_INFO "\n Device_ID = %x", myword);
 	pci_read_config_word(dev, 4, &myword);
-	printk("\n command register = %x", myword);
+	printk(KERN_INFO "\n command register = %x", myword);
 	pci_read_config_word(dev, 6, &myword);
-	printk("\n status register = %x", myword);
+	printk(KERN_INFO "\n status register = %x", myword);
 	pci_read_config_byte(dev, 8, &mybyte);
-	printk("\n Revesion ID = %x", mybyte);
+	printk(KERN_INFO "\n Revesion ID = %x", mybyte);
 	pci_read_config_byte(dev, 0x0B, &mybyte);
-	printk("\n Base-class = %x", mybyte);
+	printk(KERN_INFO "\n Base-class = %x", mybyte);
 	pci_read_config_byte(dev, 0x0A, &mybyte);
-	printk("   Sub-class = %x", mybyte);
+	printk(KERN_INFO "   Sub-class = %x", mybyte);
 	pci_read_config_byte(dev, 9, &mybyte);
-	printk("   Prog I/F = %x", mybyte);
+	printk(KERN_INFO "   Prog I/F = %x", mybyte);
 	pci_read_config_dword(dev, 0x0C, &mydword);
-	printk("\n BIST Header-type Latency-timer Cache-line-size = %lx", mydword);
+	printk(KERN_INFO "\n BIST Header-type Latency-timer Cache-line-size = %lx", mydword);
 	pci_read_config_dword(dev, 0x10, &mydword);
-	printk("\n Base Address 0 (IOAR) = %lx", mydword);
+	printk(KERN_INFO "\n Base Address 0 (IOAR) = %lx", mydword);
 	pci_read_config_dword(dev, 0x14, &mydword);
-	printk("\n Base Address 1 (MEMAR) = %lx", mydword);
-	printk("\n Base Address 2-5 (RESERVED)");
+	printk(KERN_INFO "\n Base Address 1 (MEMAR) = %lx", mydword);
+	pci_read_config_dword(dev, 0x18, &mydword);
+	printk(KERN_INFO "\n Base Address 2 (MEMAR) = %lx", mydword);
+	printk(KERN_INFO "\n Base Address 3-5 (RESERVED)");
 	pci_read_config_dword(dev, 0x28, &mydword);
-	printk("\n CardBus CIS pointer = %lx", mydword);
+	printk(KERN_INFO "\n CardBus CIS pointer = %lx", mydword);
 	pci_read_config_word(dev, 0x2c, &myword);
-	printk("\n Sub VENDOR_ID = %x",myword);
+	printk(KERN_INFO "\n Sub VENDOR_ID = %x",myword);
 	pci_read_config_word(dev, 0x2E, &myword);
-	printk("\n Sub Device_ID = %x", myword);
+	printk(KERN_INFO "\n Sub Device_ID = %x", myword);
 	pci_read_config_dword(dev, 0x30, &mydword);
-	printk("\n Expansion ROM Base Address = %lx", mydword);
+	printk(KERN_INFO "\n Expansion ROM Base Address = %lx", mydword);
 
 }
 
@@ -88,7 +195,7 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 
 	print_config_space(dev);
 	
-        if(pci_request_region(dev, 0, "mypci_mem") != 0)
+        if(pci_request_regions(dev, "siriustek_pci_driver"))
 	{
 	printk(KERN_ERR "pci_request_region failed\n");
 	goto ALLOC_REGION_FAIL;
@@ -98,24 +205,39 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 	printk(KERN_INFO "pci_request_region pass\n");
 	}
 
-	if((dpv->reg_base = ioremap(pci_resource_start(dev,1), pci_resource_len(dev,1))) == NULL){
+	if((dpv->reg_base = ioremap(pci_resource_start(dev,2), pci_resource_len(dev,2))) == NULL){
         printk("ioremap fail");
 	goto IOREMAP_FAIL;	
-	}	
+	}
 	printk(KERN_INFO "Register Base: %p\n", dpv->reg_base);
 	printk(KERN_INFO "IRQ: %u\n", dev->irq);
 	
 	pci_set_drvdata(dev,dpv);
-	printk(KERN_INFO "PCI DEVICE REGISTERED. OUT OF PROBE");
+
+	printk("IRQ %d\n",dev->irq);
+
+	printk("TESTING STRUCTS pci_device =%p pci_driver=%p device=%p device_driver=%p &(dev->pci_driver->device_driver)=%p",dev,dev->driver,&(dev->dev),dev->dev.driver,&(dev->driver->driver));
+	
+	if(pci_enable_msi(dev)<0)
+	{
+		printk("Failed to init MSI");
+	}else{
+		printk("IRQ with MSI %d\n",dev->irq);
+		printk("MSI enabled");
+	}
+	
+	setup_buffer(dev);
+	
+	init_chardev(dpv);
+	printk(KERN_INFO "PCI DEVICE REGISTERED OUT OF PROBE");
 	goto DONE;	
 
 IOREMAP_FAIL:
-
+	pci_release_regions(dev);
 ALLOC_REGION_FAIL:
 	pci_disable_device(dev);
 DONE:
 	return 0;
-
 }
 
 static void myPciRemove(struct pci_dev *dev)
