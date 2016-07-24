@@ -19,21 +19,46 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Amit");
 
+typedef struct Desc{
+	uint32_t opts1;
+	uint32_t opts2;
+	uint64_t addr;
+
+} Desc;
+
 static struct dev_priv
 {
 	dev_t mydev;
 	struct cdev mycdev;
 	struct class *cl;
         void __iomem *reg_base;
+	Desc *tx_desc, *rx_desc;
+	dma_addr_t tx_phy_desc, rx_phy_desc;
 } _pvt;
 
 
+void setup_buffer(pci_dev *dev)
+{
+	struct *dev_priv = pci_get_drvdata(dev);
+	dev_priv->tx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), dev_priv->tx_phy_desc, GFP_ATOMIC);
+	if(!tx_desc)
+	{
+		printk(KERN_INFO "\ntx dma_alloc_coherent failed");
+	}
+
+	rx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), dev_priv->rx_phy_desc, GFP_ATOMIC);
+
+	 
+}
+
 ssize_t pci_read(struct file *fp, char __user *buff, size_t count, loff_t *off)
 {
-	int i,data;
+	int i,data,to_read;
 	char mac[7];
 	struct dev_priv *private = (struct dev_priv*) fp->private_data;
-	printk(KERN_INFO "\nmac-addr ");
+	printk(KERN_INFO "\nmac-addr count %d",count);
+
+	to_read = min(count, 7- (size_t)(*off));
 	for(i=0; i<6; i++){
 		data = ioread8(private->reg_base +i);
 		printk(KERN_INFO "%x:",data);
@@ -43,7 +68,8 @@ ssize_t pci_read(struct file *fp, char __user *buff, size_t count, loff_t *off)
 	if(copy_to_user(buff, mac, 7)){
 		printk(KERN_INFO "copy to user failed");
 	}
-	return 0;
+	*off += to_read;
+	return to_read;
 }
 /*
 ssize_t pci_write(struct file *fp, const char __user *buff, size_t count, loff_t *off)
@@ -185,8 +211,7 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 
 	/*  Initialize device before it's used by a driver. Ask low-level code to enable I/O and memory. Wake up the device if it was suspended*/
 	rc = pci_enable_device(dev);
-	if(rc)
-	{
+	if(rc) {
 	printk(KERN_ERR "\ndevice enabling FAILED");
 	return rc;
 	}
@@ -195,13 +220,11 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 
 	print_config_space(dev);
 	
-        if(pci_request_regions(dev, "siriustek_pci_driver"))
-	{
+        if(pci_request_regions(dev, "siriustek_pci_driver")) {
 	printk(KERN_ERR "pci_request_region failed\n");
 	goto ALLOC_REGION_FAIL;
 	}
-	else
-	{
+	else {
 	printk(KERN_INFO "pci_request_region pass\n");
 	}
 
@@ -273,7 +296,6 @@ static int __init mypci_init(void)
 
 static void __exit mypci_exit(void)
 {
-
 	pci_unregister_driver(&mypci_driver);
 }
 
