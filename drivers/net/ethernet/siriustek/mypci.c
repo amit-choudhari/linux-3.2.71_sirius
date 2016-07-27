@@ -15,6 +15,23 @@
 #define EXPT_PRODUCT_ID 0x8136 /* Fast ethernet card on PCs */
 #define DEVICE_NAME "siriuspci"
 #define CLASS_NAME "sirius_class"
+#define PAK_SIZE 256
+
+#define CFG_REG 0x50
+#define CFG_UNLOCK 0xc0
+#define CFG_LOCK 0x00
+
+#define TX_HIGH_DESC 0x24
+#define TX_LOW_DESC 0x20
+#define RX_HIGH_DESC 0xe8
+#define RX_LOW_DESC 0xe4
+
+enum statusBits{
+	DevOwn = 1<<31;
+	RingEnd = 1<<30;
+	FirstFrag = 1<<29;
+	LastFrag =1<<28 ;
+};
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Amit");
@@ -34,21 +51,57 @@ static struct dev_priv
         void __iomem *reg_base;
 	Desc *tx_desc, *rx_desc;
 	dma_addr_t tx_phy_desc, rx_phy_desc;
+	dma_addr_t tx_phy_pak, rx_phy_pak;
+	atomic_t pkt_tx_busy,pkt_tx_avail;
 } _pvt;
 
 
 void setup_buffer(pci_dev *dev)
 {
 	struct *dev_priv = pci_get_drvdata(dev);
-	dev_priv->tx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), dev_priv->tx_phy_desc, GFP_ATOMIC);
+	dev_priv->tx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), &dev_priv->tx_phy_desc, GFP_ATOMIC);
 	if(!tx_desc)
 	{
 		printk(KERN_INFO "\ntx dma_alloc_coherent failed");
 	}
 
-	rx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), dev_priv->rx_phy_desc, GFP_ATOMIC);
+	dev_priv->rx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), &dev_priv->rx_phy_desc, GFP_ATOMIC);
+	if(!dev_priv->rx_desc)
+	{
+		printk(KERN_INFO "\n rx dma_alloc_coherent failed");
+	}
 
-	 
+	dev_priv->tx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
+	if(!dev_priv->tx_pak)
+	{
+		printf("\n unable to kmalloc tx_pak");
+	}
+	dev_priv->tx_phy_pak = dma_map_single(dev, dev_priv->tx_pak, PAK_SIZE, DMA_TO_DEVICE);
+
+	dev_priv->rx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
+	if(!dev_priv->rx_pak)
+	{
+		printf("\n unable to kmalloc rx_pak");
+	}
+	dev_priv->rx_phy_pak = dma_map_single(dev, dev_priv->rx_pak, PAK_SIZE, DMA_FROM_DEVICE);
+
+	dev_priv->tx_desc->opts1 = cpu_to_le32(RingEnd | FirstFrag | LastFrag);
+	dev_priv->tx_desc->opts2 = 0;
+	dev_priv->tx_desc->addr = cpu_to_le64(dev_priv->tx_phy_pak);
+	dev_priv->rx_desc->opts1 = cpu_to_le32(DevOwn | RingEnd | PAK_SIZE);
+	dev_priv->rx_desc->opts2 = 0;
+	dev_priv->rx_desc->addr = cpu_to_le64(dev_priv->rx_phy_pak);
+
+	iowrite8(CFG_UNLOCK, dev_priv->reg_base + CFG_REG);
+	iowrite32(dev_priv->tx_phy_desc & DMA_BIT_MASK(32),dev_priv->reg_base + TX_LOW_DESC)
+	iowrite32((uint64_t)dev_priv->tx_phy_desc >>32,dev_priv->reg_base + TX_HIGH_DESC)
+	iowrite32(dev_priv->tx_phy_desc,dev_priv->reg_base + RX_LOW_DESC)
+	iowrite32((uint64_t)dev_priv->rx_phy_desc >>32,dev_priv->reg_base + RX_HIGH_DESC)
+	iowrite8(CFG_LOCK, dev_priv->reg_base + CFG_REG);
+
+	atomic_set(&dev_priv->pkt_tx_busy,0);
+	atomic_set(&dev_priv->pkt_rx_avail,0);
+		
 }
 
 ssize_t pci_read(struct file *fp, char __user *buff, size_t count, loff_t *off)
