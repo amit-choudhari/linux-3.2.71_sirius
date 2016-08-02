@@ -3,13 +3,18 @@
 #include<linux/kernel.h>
 #include<linux/pci.h>
 #include<linux/types.h>
-#include<linux/io.h>
 #include<linux/cdev.h>
 #include<linux/fs.h>
 #include<linux/device.h>
 #include<linux/slab.h>
 #include<linux/uaccess.h>
+#include<linux/interrupt.h>
 
+#include<asm/atomic.h>
+#include<asm/io.h>
+
+#include<linux/mii.h>
+#include<linux/delay.h>
 
 #define EXPT_VENDOR_ID PCI_VENDOR_ID_REALTEK
 #define EXPT_PRODUCT_ID 0x8136 /* Fast ethernet card on PCs */
@@ -17,6 +22,7 @@
 #define CLASS_NAME "sirius_class"
 #define PAK_SIZE 256
 
+/*address macros*/
 #define CFG_REG 0x50
 #define CFG_UNLOCK 0xc0
 #define CFG_LOCK 0x00
@@ -25,6 +31,26 @@
 #define TX_LOW_DESC 0x20
 #define RX_HIGH_DESC 0xe8
 #define RX_LOW_DESC 0xe4
+
+#define ISR_REG 0x3E
+
+#define PHY_ACCESS_ACCESS_REG 0x60
+#define CMD_TX_RX_EN 0x37
+
+/* masks*/
+#define TX_OK (1<<2)
+#define RX_OK (1<<0)
+#define LINK_CHANGE (1<<5)
+#define TX_ERR (1<<3)
+#define RX_ERR (1<<1)
+#define TX_DESC_U (1<<7)
+#define RX_DESC_U (1<<4)
+
+#define ISR_MASK (TX_OK | RX_OK | LINK_CHANGE)
+#define ISR_ERR_MASK (TX_ERR | RX_ERR | TX_DESC_U | RX_DESC_U)
+
+#define TX_EN (1<<2)
+#define RX_EN (1<<3)
 
 enum statusBits{
 	DevOwn = 1<<31;
@@ -62,26 +88,26 @@ void setup_buffer(pci_dev *dev)
 	dev_priv->tx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), &dev_priv->tx_phy_desc, GFP_ATOMIC);
 	if(!tx_desc)
 	{
-		printk(KERN_INFO "\ntx dma_alloc_coherent failed");
+		printk(KERN_ERR "tx dma_alloc_coherent failed");
 	}
 
 	dev_priv->rx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), &dev_priv->rx_phy_desc, GFP_ATOMIC);
 	if(!dev_priv->rx_desc)
 	{
-		printk(KERN_INFO "\n rx dma_alloc_coherent failed");
+		printk(KERN_ERR "rx dma_alloc_coherent failed");
 	}
 
 	dev_priv->tx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
 	if(!dev_priv->tx_pak)
 	{
-		printf("\n unable to kmalloc tx_pak");
+		printk(KERN_ERR "unable to kmalloc tx_pak");
 	}
 	dev_priv->tx_phy_pak = dma_map_single(dev, dev_priv->tx_pak, PAK_SIZE, DMA_TO_DEVICE);
 
 	dev_priv->rx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
 	if(!dev_priv->rx_pak)
 	{
-		printf("\n unable to kmalloc rx_pak");
+		printk(KERN_ERR "unable to kmalloc rx_pak");
 	}
 	dev_priv->rx_phy_pak = dma_map_single(dev, dev_priv->rx_pak, PAK_SIZE, DMA_FROM_DEVICE);
 
@@ -102,6 +128,119 @@ void setup_buffer(pci_dev *dev)
 	atomic_set(&dev_priv->pkt_tx_busy,0);
 	atomic_set(&dev_priv->pkt_rx_avail,0);
 		
+}
+
+static inline void hw_intr_enable(struct *dev_priv, uint16_t mask)
+{
+	iowrite16(ioread16(dev_priv->reg_base + INTR_MASK_REG) | mask, dev_priv->reg_base + INTR_MASK_REG);
+}
+
+static inline void hw_intr_disable(struct *dev_priv, uint16_t mask)
+{
+	iowrite16(ioread16(dev_priv->reg_base + INTR_MASK_REG) & ~mask, dev_priv->reg_base + INTR_MASK_REG);
+}
+
+static inline void phy_write(void __iomem *reg_base, uinti8_t reg_addr, uint_t reg16_data)
+{
+	int i;
+	iowrite32(0<<31 | reg_base+reg_addr<<16 | reg_data<<0, reg_base + PHY_ACCESS_REG);
+	for(i=0;i<10,i++){
+		udelay(100);
+		(ioread32(reg_base+PHY_ACCESS_REG) & 1<<31)
+			break;
+	}
+
+}
+static inline phy_read(void __iomem *reg_base, uint8_t reg_addr)
+{
+	uint16_t i,data;
+	iowrite32(1<<31 | reg_base + reg_addr, reg_base+PHY_ACCESS_REG);
+	for(i=0; i<10; i++){
+		udelay(100);
+		data = ioread32(reg_base+PHY_ACCESS_REG);
+		if(data & 1<<31)
+			break;
+	}
+	return data;
+}
+
+static inline phy_init(struct pci_dev *dev)
+{
+	dev_priv *dpv = pci_get_drvdata(dev);
+	phy_write(dpv->reg_base, MII_BMCR, BMCR_ANENABLE);
+}
+
+static inline phy_shut(struct pci_dev *dev)
+{
+	dev_priv *dpv = pci_get_drvdata(dev);
+	phy_write(dpv->reg_base, MII_BMCR, BMCR_PDOWN);
+}
+
+void hw_init(struct pci_dev *dev)
+{
+	dev_priv *dpv = pci_get_drvdata(dev);
+	phy_init(dev);
+	iowrite8(TX_EN | RX_EN, dpv->reg_base + CMD_TX_RX_EN);
+	hw_intr_enable(dpv->reg_base, INTR_MASK | INTR_ERR_MASK);
+
+}
+
+/*TODO ADD ACTIONS BASED ON ISR*/	
+irqreturn_t mypci_interrupt_handler(int irq, void *dev)
+{
+	dev_priv *dpv = pci_get_drvdata(dev);
+
+	uint32_t isr_reg = ioread16(dpv->reg_base + ISR_REG);
+	if(dev->irq == irq)
+	{
+		printk(KERN_DEBUG "okay.. so the irq %d is same as our device");
+	}
+	
+	if(!(isr_reg & (ISR_MASK | ISR_ERR_MASK)))
+	{
+		printk(KERN_ERR "OMG! not our Interrupt. foolish CPU");
+	}
+	else
+		printk(KERN_DEBUG "your Irequest is my command");
+	
+	if(isr_reg & LINK_CHANGE)
+	{
+		iowrite8(LINK_CHANGE, dpv->reg_base + ISR_REG);
+		printk(KERN_DEBUG "Link changed");
+		/*TODO Link ok check*/
+	}
+	
+	if(isr_reg & ISR_MASK)
+	{
+		if(isr_reg & TX_OK){
+		iowrite8(TX_OK, dpv->reg_base + ISR_REG);
+		atomic_dec(&dev_priv->pkt_tx_busy);
+		printk(KERN_DEBUG "TX ok");
+		}
+
+		if(sr_reg & RX_OK){
+		iowrite8(RX_OK, dpv->reg_base + ISR_REG);
+		atomic_inc(&dev_priv->pkt_tx_busy);
+		printk(KERN_DEBUG "RX ok");
+		}
+		
+	}
+	if(isr_reg & ISR_ERR_MASK){
+		if(sr_reg & TX_DESC_U){
+		printk(KERN_ERR "TX Descriptor unavailable");
+		}
+		if(sr_reg & RX_DESC_U){
+		printk(KERN_ERR "RX Descriptor unavailable");
+		}
+		if(sr_reg & TX_ERR){
+		printk(KERN_DEBUG "TX ERROR");
+		}
+		if(sr_reg & TX_ERR){
+		printk(KERN_DEBUG "TX ERROR");
+		}
+		iowrite8(ISR_ERR_MASK, dpv->reg_base + ISR_REG);
+	}
+	return IRQ_HANDLED;
 }
 
 ssize_t pci_read(struct file *fp, char __user *buff, size_t count, loff_t *off)
@@ -273,7 +412,7 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 
 	print_config_space(dev);
 	
-        if(pci_request_regions(dev, "siriustek_pci_driver")) {
+        if(pci_request_regions(dev, "siriustek_pci")) {
 	printk(KERN_ERR "pci_request_region failed\n");
 	goto ALLOC_REGION_FAIL;
 	}
@@ -303,6 +442,9 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 	}
 	
 	setup_buffer(dev);
+
+	request_threaded_irq(dev->irq, mypci_interrupt_handler, IRQF_SHARED, "siriustek_pci", dev);
+	hw_init(dev);
 	
 	init_chardev(dpv);
 	printk(KERN_INFO "PCI DEVICE REGISTERED OUT OF PROBE");
