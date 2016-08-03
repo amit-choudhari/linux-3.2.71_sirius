@@ -33,8 +33,9 @@
 #define RX_LOW_DESC 0xe4
 
 #define ISR_REG 0x3E
+#define INTR_MASK_REG 0x3C
 
-#define PHY_ACCESS_ACCESS_REG 0x60
+#define PHY_ACCESS_REG 0x60
 #define CMD_TX_RX_EN 0x37
 
 /* masks*/
@@ -46,17 +47,17 @@
 #define TX_DESC_U (1<<7)
 #define RX_DESC_U (1<<4)
 
-#define ISR_MASK (TX_OK | RX_OK | LINK_CHANGE)
-#define ISR_ERR_MASK (TX_ERR | RX_ERR | TX_DESC_U | RX_DESC_U)
+#define INTR_MASK (TX_OK | RX_OK | LINK_CHANGE)
+#define INTR_ERR_MASK (TX_ERR | RX_ERR | TX_DESC_U | RX_DESC_U)
 
 #define TX_EN (1<<2)
 #define RX_EN (1<<3)
 
 enum statusBits{
-	DevOwn = 1<<31;
-	RingEnd = 1<<30;
-	FirstFrag = 1<<29;
-	LastFrag =1<<28 ;
+	DevOwn = 1<<31,
+	RingEnd = 1<<30,
+	FirstFrag = 1<<29,
+	LastFrag =1<<28
 };
 
 MODULE_LICENSE("GPL");
@@ -77,84 +78,86 @@ static struct dev_priv
         void __iomem *reg_base;
 	Desc *tx_desc, *rx_desc;
 	dma_addr_t tx_phy_desc, rx_phy_desc;
+        uint8_t *tx_pak, *rx_pak;
 	dma_addr_t tx_phy_pak, rx_phy_pak;
 	atomic_t pkt_tx_busy,pkt_tx_avail;
+	atomic_t pkt_rx_busy,pkt_rx_avail;
 } _pvt;
 
 
-void setup_buffer(pci_dev *dev)
+void setup_buffer(struct pci_dev *dev)
 {
-	struct *dev_priv = pci_get_drvdata(dev);
-	dev_priv->tx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), &dev_priv->tx_phy_desc, GFP_ATOMIC);
-	if(!tx_desc)
+	struct dev_priv *dpv= pci_get_drvdata(dev);
+	dpv->tx_desc = dma_alloc_coherent(&dev->dev, (size_t) sizeof(Desc), &dpv->tx_phy_desc, GFP_ATOMIC);
+	if(!dpv->tx_desc)
 	{
 		printk(KERN_ERR "tx dma_alloc_coherent failed");
 	}
 
-	dev_priv->rx_desc = dma_alloc_coherent(dev, (size_t) sizeof(Desc), &dev_priv->rx_phy_desc, GFP_ATOMIC);
-	if(!dev_priv->rx_desc)
+	dpv->rx_desc = dma_alloc_coherent(&dev->dev, (size_t) sizeof(Desc), &dpv->rx_phy_desc, GFP_ATOMIC);
+	if(!dpv->rx_desc)
 	{
 		printk(KERN_ERR "rx dma_alloc_coherent failed");
 	}
 
-	dev_priv->tx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
-	if(!dev_priv->tx_pak)
+	dpv->tx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
+	if(!dpv->tx_pak)
 	{
 		printk(KERN_ERR "unable to kmalloc tx_pak");
 	}
-	dev_priv->tx_phy_pak = dma_map_single(dev, dev_priv->tx_pak, PAK_SIZE, DMA_TO_DEVICE);
+	dpv->tx_phy_pak = dma_map_single(&dev->dev, dpv->tx_pak, PAK_SIZE, DMA_TO_DEVICE);
 
-	dev_priv->rx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
-	if(!dev_priv->rx_pak)
+	dpv->rx_pak = kmalloc(PAK_SIZE, GFP_KERNEL | GFP_DMA);
+	if(!dpv->rx_pak)
 	{
 		printk(KERN_ERR "unable to kmalloc rx_pak");
 	}
-	dev_priv->rx_phy_pak = dma_map_single(dev, dev_priv->rx_pak, PAK_SIZE, DMA_FROM_DEVICE);
+	dpv->rx_phy_pak = dma_map_single(&dev->dev, dpv->rx_pak, PAK_SIZE, DMA_FROM_DEVICE);
 
-	dev_priv->tx_desc->opts1 = cpu_to_le32(RingEnd | FirstFrag | LastFrag);
-	dev_priv->tx_desc->opts2 = 0;
-	dev_priv->tx_desc->addr = cpu_to_le64(dev_priv->tx_phy_pak);
-	dev_priv->rx_desc->opts1 = cpu_to_le32(DevOwn | RingEnd | PAK_SIZE);
-	dev_priv->rx_desc->opts2 = 0;
-	dev_priv->rx_desc->addr = cpu_to_le64(dev_priv->rx_phy_pak);
+	dpv->tx_desc->opts1 = cpu_to_le32(RingEnd | FirstFrag | LastFrag);
+	dpv->tx_desc->opts2 = 0;
+	dpv->tx_desc->addr = cpu_to_le64(dpv->tx_phy_pak);
+	dpv->rx_desc->opts1 = cpu_to_le32(DevOwn | RingEnd | PAK_SIZE);
+	dpv->rx_desc->opts2 = 0;
+	dpv->rx_desc->addr = cpu_to_le64(dpv->rx_phy_pak);
 
-	iowrite8(CFG_UNLOCK, dev_priv->reg_base + CFG_REG);
-	iowrite32(dev_priv->tx_phy_desc & DMA_BIT_MASK(32),dev_priv->reg_base + TX_LOW_DESC)
-	iowrite32((uint64_t)dev_priv->tx_phy_desc >>32,dev_priv->reg_base + TX_HIGH_DESC)
-	iowrite32(dev_priv->tx_phy_desc,dev_priv->reg_base + RX_LOW_DESC)
-	iowrite32((uint64_t)dev_priv->rx_phy_desc >>32,dev_priv->reg_base + RX_HIGH_DESC)
-	iowrite8(CFG_LOCK, dev_priv->reg_base + CFG_REG);
+	iowrite8(CFG_UNLOCK, dpv->reg_base + CFG_REG);
+	iowrite32(dpv->tx_phy_desc & DMA_BIT_MASK(32),dpv->reg_base + TX_LOW_DESC);
+	iowrite32((uint64_t)dpv->tx_phy_desc >>32,dpv->reg_base + TX_HIGH_DESC);
+	iowrite32(dpv->tx_phy_desc,dpv->reg_base + RX_LOW_DESC);
+	iowrite32((uint64_t)dpv->rx_phy_desc >>32,dpv->reg_base + RX_HIGH_DESC);
+	iowrite8(CFG_LOCK, dpv->reg_base + CFG_REG);
 
-	atomic_set(&dev_priv->pkt_tx_busy,0);
-	atomic_set(&dev_priv->pkt_rx_avail,0);
+	atomic_set(&dpv->pkt_tx_busy,0);
+	atomic_set(&dpv->pkt_rx_avail,0);
 		
 }
 
-static inline void hw_intr_enable(struct *dev_priv, uint16_t mask)
+static inline void hw_intr_enable(struct dev_priv *dpv, uint16_t mask)
 {
-	iowrite16(ioread16(dev_priv->reg_base + INTR_MASK_REG) | mask, dev_priv->reg_base + INTR_MASK_REG);
+	iowrite16(ioread16(dpv->reg_base + INTR_MASK_REG) | mask, dpv->reg_base + INTR_MASK_REG);
 }
 
-static inline void hw_intr_disable(struct *dev_priv, uint16_t mask)
+static inline void hw_intr_disable(struct dev_priv *dpv, uint16_t mask)
 {
-	iowrite16(ioread16(dev_priv->reg_base + INTR_MASK_REG) & ~mask, dev_priv->reg_base + INTR_MASK_REG);
+	iowrite16(ioread16(dpv->reg_base + INTR_MASK_REG) & ~mask, dpv->reg_base + INTR_MASK_REG);
 }
 
-static inline void phy_write(void __iomem *reg_base, uinti8_t reg_addr, uint_t reg16_data)
+static inline void phy_write(void __iomem *reg_base, uint8_t reg_addr, uint16_t reg_data)
 {
 	int i;
-	iowrite32(0<<31 | reg_base+reg_addr<<16 | reg_data<<0, reg_base + PHY_ACCESS_REG);
-	for(i=0;i<10,i++){
+	iowrite32(1<<31 | reg_addr<<16 | reg_data<<0, reg_base + PHY_ACCESS_REG);
+	for(i=0;i<10;i++){
 		udelay(100);
-		(ioread32(reg_base+PHY_ACCESS_REG) & 1<<31)
+		if(ioread32(reg_base+PHY_ACCESS_REG) & 1<<31)
 			break;
 	}
 
 }
-static inline phy_read(void __iomem *reg_base, uint8_t reg_addr)
+static inline uint16_t phy_read(void __iomem *reg_base, uint8_t reg_addr)
 {
 	uint16_t i,data;
-	iowrite32(1<<31 | reg_base + reg_addr, reg_base+PHY_ACCESS_REG);
+	iowrite32(1<<31 | (reg_addr<<16), reg_base+PHY_ACCESS_REG);
 	for(i=0; i<10; i++){
 		udelay(100);
 		data = ioread32(reg_base+PHY_ACCESS_REG);
@@ -164,39 +167,39 @@ static inline phy_read(void __iomem *reg_base, uint8_t reg_addr)
 	return data;
 }
 
-static inline phy_init(struct pci_dev *dev)
+static inline void phy_init(struct pci_dev *dev)
 {
-	dev_priv *dpv = pci_get_drvdata(dev);
+	struct dev_priv *dpv = pci_get_drvdata(dev);
 	phy_write(dpv->reg_base, MII_BMCR, BMCR_ANENABLE);
 }
 
-static inline phy_shut(struct pci_dev *dev)
+static inline void phy_shut(struct pci_dev *dev)
 {
-	dev_priv *dpv = pci_get_drvdata(dev);
+	struct dev_priv *dpv = pci_get_drvdata(dev);
 	phy_write(dpv->reg_base, MII_BMCR, BMCR_PDOWN);
 }
 
 void hw_init(struct pci_dev *dev)
 {
-	dev_priv *dpv = pci_get_drvdata(dev);
+	struct dev_priv *dpv = pci_get_drvdata(dev);
 	phy_init(dev);
 	iowrite8(TX_EN | RX_EN, dpv->reg_base + CMD_TX_RX_EN);
-	hw_intr_enable(dpv->reg_base, INTR_MASK | INTR_ERR_MASK);
+	hw_intr_enable(dpv, INTR_MASK | INTR_ERR_MASK);
 
 }
 
 /*TODO ADD ACTIONS BASED ON ISR*/	
 irqreturn_t mypci_interrupt_handler(int irq, void *dev)
 {
-	dev_priv *dpv = pci_get_drvdata(dev);
+	struct dev_priv *dpv = pci_get_drvdata(dev);
+	uint16_t isr_reg = ioread16(dpv->reg_base + ISR_REG);
 
-	uint32_t isr_reg = ioread16(dpv->reg_base + ISR_REG);
-	if(dev->irq == irq)
+/*	if((struct pci_dev *)dev->irq == irq)
 	{
 		printk(KERN_DEBUG "okay.. so the irq %d is same as our device");
 	}
-	
-	if(!(isr_reg & (ISR_MASK | ISR_ERR_MASK)))
+*/	
+	if(!(isr_reg & (INTR_MASK | INTR_ERR_MASK)))
 	{
 		printk(KERN_ERR "OMG! not our Interrupt. foolish CPU");
 	}
@@ -210,35 +213,35 @@ irqreturn_t mypci_interrupt_handler(int irq, void *dev)
 		/*TODO Link ok check*/
 	}
 	
-	if(isr_reg & ISR_MASK)
+	if(isr_reg & INTR_MASK)
 	{
 		if(isr_reg & TX_OK){
 		iowrite8(TX_OK, dpv->reg_base + ISR_REG);
-		atomic_dec(&dev_priv->pkt_tx_busy);
+		atomic_dec(&dpv->pkt_tx_busy);
 		printk(KERN_DEBUG "TX ok");
 		}
 
-		if(sr_reg & RX_OK){
+		if(isr_reg & RX_OK){
 		iowrite8(RX_OK, dpv->reg_base + ISR_REG);
-		atomic_inc(&dev_priv->pkt_tx_busy);
+		atomic_inc(&dpv->pkt_tx_busy);
 		printk(KERN_DEBUG "RX ok");
 		}
 		
 	}
-	if(isr_reg & ISR_ERR_MASK){
-		if(sr_reg & TX_DESC_U){
+	if(isr_reg & INTR_ERR_MASK){
+		if(isr_reg & TX_DESC_U){
 		printk(KERN_ERR "TX Descriptor unavailable");
 		}
-		if(sr_reg & RX_DESC_U){
+		if(isr_reg & RX_DESC_U){
 		printk(KERN_ERR "RX Descriptor unavailable");
 		}
-		if(sr_reg & TX_ERR){
+		if(isr_reg & TX_ERR){
 		printk(KERN_DEBUG "TX ERROR");
 		}
-		if(sr_reg & TX_ERR){
+		if(isr_reg & TX_ERR){
 		printk(KERN_DEBUG "TX ERROR");
 		}
-		iowrite8(ISR_ERR_MASK, dpv->reg_base + ISR_REG);
+		iowrite8(INTR_ERR_MASK, dpv->reg_base + ISR_REG);
 	}
 	return IRQ_HANDLED;
 }
@@ -443,7 +446,7 @@ static int myPciProbe (struct pci_dev *dev,const struct pci_device_id *id)
 	
 	setup_buffer(dev);
 
-	request_threaded_irq(dev->irq, mypci_interrupt_handler, IRQF_SHARED, "siriustek_pci", dev);
+	request_irq(dev->irq, mypci_interrupt_handler, IRQF_SHARED, "siriustek_pci", dev);
 	hw_init(dev);
 	
 	init_chardev(dpv);
