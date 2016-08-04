@@ -1,0 +1,5 @@
+#!/bin/bash
+
+ifconfig sn0 192.168.32.4 # snull-localhost0 -> snull-localhost1
+# snull-localhost1 -> snull-remotehost1
+ifconfig sn1 192.168.33.5 # snull-remotehost1 -> snull-remotehost0
